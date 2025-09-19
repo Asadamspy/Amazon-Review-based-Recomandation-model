@@ -1,46 +1,70 @@
+# app.py
+
 import streamlit as st
-import pandas as pd
-import numpy as np
 import joblib
-from surprise import SVD
+import pandas as pd
 
-# --- Load Model and Mappings ---
-@st.cache_data
-def load_model():
-    model = joblib.load('svd_amazon_model.joblib')
-    item_map = joblib.load('item_id_map.joblib')
-    user_map = joblib.load('user_id_map.joblib')
-    return model, item_map, user_map
+# --------------------------
+# Load models and mappings
+# --------------------------
+@st.cache_resource
+def load_model_files():
+    svd_model = joblib.load("svd_amazon_model.joblib")
+    item_map = joblib.load("item_id_map.joblib")
+    user_map = joblib.load("user_id_map.joblib")
+    return svd_model, item_map, user_map
 
-model, item_map, user_map = load_model()
+svd_model, item_map, user_map = load_model_files()
 
-# Reverse mapping for displaying ProductIds
-rev_item_map = {v: k for k, v in item_map.items()}
+# Reverse maps for display
+inv_item_map = {v: k for k, v in item_map.items()}
 
-# --- Streamlit UI ---
+# --------------------------
+# Streamlit App Layout
+# --------------------------
 st.set_page_config(page_title="Amazon Product Recommender", layout="wide")
-st.title("Amazon Product Recommendation System")
-st.markdown("Get Top-N product recommendations for any user!")
+st.title("🛒 Amazon Product Recommendation Engine")
+st.markdown(
+    "Select a user ID to get Top-5 recommended products based on past reviews."
+)
 
-# Select user
-user_ids = list(user_map.values())
-selected_user = st.selectbox("Select User ID:", user_ids)
+# User selection
+user_id_input = st.selectbox(
+    "Select User ID",
+    options=list(user_map.values())
+)
 
-if st.button("Recommend Products"):
-    # Encode user ID
-    uid_enc = [k for k, v in user_map.items() if v == selected_user][0]
+# --------------------------
+# Recommendation Function
+# --------------------------
+def recommend_products(user_id, top_n=5):
+    """Return top-N product recommendations for a given user ID."""
+    try:
+        uid_enc = [k for k, v in user_map.items() if v == user_id][0]
+    except IndexError:
+        return []
 
     # Build anti-testset for this user
-    all_items = list(item_map.values())
-    user_rated_items = [iid for (iid, _) in model.trainset.ur[uid_enc]] if uid_enc in model.trainset.ur else []
-    anti_testset = [(uid_enc, iid, 0) for iid in all_items if iid not in user_rated_items]
+    user_items = [iid for iid in item_map.values()]
+    predictions = [
+        (iid, svd_model.predict(uid_enc, iid).est) for iid in user_items
+    ]
 
-    # Predict
-    predictions = model.test(anti_testset)
+    # Sort and take top-N
+    predictions.sort(key=lambda x: x[1], reverse=True)
+    top_items = [inv_item_map[iid] for iid, _ in predictions[:top_n]]
+    return top_items
 
-    # Get top 5
-    top_n = sorted(predictions, key=lambda x: x.est, reverse=True)[:5]
-    recommended_products = [rev_item_map[int(iid)] for (uid, iid, true_r, est) in top_n]
+# --------------------------
+# Show Recommendations
+# --------------------------
+if st.button("Get Recommendations"):
+    with st.spinner("Calculating recommendations..."):
+        top_products = recommend_products(user_id_input, top_n=5)
+        if top_products:
+            st.success(f"Top-5 recommended products for User {user_id_input}:")
+            for idx, prod in enumerate(top_products, 1):
+                st.write(f"{idx}. {prod}")
+        else:
+            st.warning("No recommendations found for this user.")
 
-    st.success(f"Top 5 recommended Product IDs for User {selected_user}:")
-    st.write(recommended_products)
