@@ -1,39 +1,46 @@
 import streamlit as st
+import pandas as pd
+import numpy as np
 import joblib
-from collections import defaultdict
+from surprise import SVD
 
-# --- Load model and mappings ---
-model = joblib.load('svd_amazon_model.joblib')
-item_map = joblib.load('item_id_map.joblib')
-user_map = joblib.load('user_id_map.joblib')
+# --- Load Model and Mappings ---
+@st.cache_data
+def load_model():
+    model = joblib.load('svd_amazon_model.joblib')
+    item_map = joblib.load('item_id_map.joblib')
+    user_map = joblib.load('user_id_map.joblib')
+    return model, item_map, user_map
 
-# Function to get Top-N recommendations
-def get_top_n(user_id_enc, n=5):
-    all_items = list(item_map.keys())
-    predictions = []
-    
-    for iid in all_items:
-        pred = model.predict(user_id_enc, iid)
-        predictions.append((iid, pred.est))
-    
-    # Sort and take top-N
-    predictions.sort(key=lambda x: x[1], reverse=True)
-    top_n = [item_map[iid] for iid, _ in predictions[:n]]
-    return top_n
+model, item_map, user_map = load_model()
+
+# Reverse mapping for displaying ProductIds
+rev_item_map = {v: k for k, v in item_map.items()}
 
 # --- Streamlit UI ---
-st.title("Amazon Product Recommendation Engine")
-st.write("Enter a User ID to get Top-5 recommended products.")
+st.set_page_config(page_title="Amazon Product Recommender", layout="wide")
+st.title("Amazon Product Recommendation System")
+st.markdown("Get Top-N product recommendations for any user!")
 
-user_input = st.text_input("UserId")
+# Select user
+user_ids = list(user_map.values())
+selected_user = st.selectbox("Select User ID:", user_ids)
 
-if st.button("Get Recommendations"):
-    # Find encoded user id
-    try:
-        user_id_enc = [k for k, v in user_map.items() if v == user_input][0]
-        recommendations = get_top_n(user_id_enc, n=5)
-        st.success("Top-5 Recommended Products:")
-        for i, prod in enumerate(recommendations, 1):
-            st.write(f"{i}. {prod}")
-    except IndexError:
-        st.error("UserId not found in the dataset!")
+if st.button("Recommend Products"):
+    # Encode user ID
+    uid_enc = [k for k, v in user_map.items() if v == selected_user][0]
+
+    # Build anti-testset for this user
+    all_items = list(item_map.values())
+    user_rated_items = [iid for (iid, _) in model.trainset.ur[uid_enc]] if uid_enc in model.trainset.ur else []
+    anti_testset = [(uid_enc, iid, 0) for iid in all_items if iid not in user_rated_items]
+
+    # Predict
+    predictions = model.test(anti_testset)
+
+    # Get top 5
+    top_n = sorted(predictions, key=lambda x: x.est, reverse=True)[:5]
+    recommended_products = [rev_item_map[int(iid)] for (uid, iid, true_r, est) in top_n]
+
+    st.success(f"Top 5 recommended Product IDs for User {selected_user}:")
+    st.write(recommended_products)
